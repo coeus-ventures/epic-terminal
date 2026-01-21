@@ -1,0 +1,7 @@
+{
+  "baseDirectory": "docs",
+  "issuesDirectory": "issues",
+  "draftsDirectory": "drafts",
+  "worktreesDirectory": ".worktrees",
+  "projectPrefix": "cli"
+}

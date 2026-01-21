@@ -1,0 +1,30 @@
+{
+  "name": "cli-boilerplate",
+  "version": "1.0.0",
+  "description": "A minimal CLI boilerplate with modular operations-based architecture",
+  "main": "cli.ts",
+  "type": "module",
+  "bin": {
+    "cli": "./cli.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "build": "bun build cli.ts --outdir=dist --target=bun",
+    "typecheck": "tsc --noEmit"
+  },
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "react-devtools-core": "^7.0.1"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@types/react": "^19.2.7",
+    "chalk": "^5.4.1",
+    "ink": "^6.5.1",
+    "react": "^19.2.1",
+    "zod": "^3.22.4"
+  }
+}
