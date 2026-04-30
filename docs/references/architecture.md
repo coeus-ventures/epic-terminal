@@ -44,7 +44,7 @@
 | Component | Responsibility |
 |-----------|----------------|
 | **Command files** | Parse CLI arguments, route to operations |
-| **cli.ts** | Top-level router for all commands |
+| **epic.ts** | Top-level router for all commands |
 
 **Location**: `commands/{command}/{command}.ts`
 
@@ -177,10 +177,10 @@ async function syncIssue(options: SyncOptions) {
 | Component | Location | File Pattern |
 |-----------|----------|--------------|
 | Command router | `commands/{command}/` | `{command}.ts` |
-| Command unit tests | `commands/{command}/` | `{command}.test.ts` |
-| Command spec tests | `commands/{command}/` | `{command}.spec.ts` |
-| Operation | `commands/{command}/{operation}/` | `{operation}.ts` |
+| Operation | `commands/{command}/{operation}/` | `{operation}.ts` (or `.tsx` for Ink UI) |
 | Operation unit tests | `commands/{command}/{operation}/` | `{operation}.test.ts` |
+| Operation component tests | `commands/{command}/{operation}/` | `{operation}.test.tsx` |
+| Operation spec tests | `commands/{command}/{operation}/tests/` | `{operation}.spec.ts` |
 | Command shared | `commands/{command}/shared/` | `services/`, `models/`, `integrations/` |
 | Global shared | `shared/` | `services/`, `models/`, `integrations/`, `test/` |
 | Test helpers | `shared/test/` | `cli.ts`, `index.ts` |
@@ -202,32 +202,37 @@ shared/
 
 commands/
   issue/
-    issue.ts              <- Command router
-    issue.test.ts         <- Unit tests (call functions directly)
-    issue.spec.ts         <- Spec tests (spawn CLI process)
+    issue.ts                          <- Command router (routing only)
     shared/
       models/
-        issue.ts          <- Issue file read/write
+        issue.ts                      <- Issue file read/write
       services/
-        issue-sync.ts     <- Complex sync business logic
+        issue-sync.ts                 <- Complex sync business logic
     get/
-      get.ts              <- Operation
-      get.test.ts         <- Operation unit tests
+      get.ts                          <- Operation
+      get.test.ts                     <- Unit tests (call functions directly)
     new/
-      new.ts
-      new.test.ts
+      new.ts                          <- Operation entry point
+      new-interactive.tsx             <- Ink/React UI
+      new-interactive.test.tsx        <- Component tests (ink-testing-library)
     sync/
       sync.ts
       sync.test.ts
+    build/
+      build.tsx
+      tests/
+        build.spec.ts                 <- Spec tests (spawn CLI process)
   project/
     project.ts
-    project.spec.ts       <- Spec tests for project command
     shared/
       models/
         project.ts
     new/
       new.ts
-      new.test.ts
+      new-interactive.tsx
+      new-interactive.test.tsx
+      tests/
+        new.spec.ts
 ```
 
 ---
@@ -331,22 +336,30 @@ commands/
 | Command | lowercase | `issue`, `project` |
 | Operation | lowercase verb | `sync`, `new`, `close` |
 | Operation folder | matches operation name | `sync/sync.ts` |
+| Ink UI files | `.tsx` extension | `new-interactive.tsx` |
 | Unit test files | `.test.ts` suffix | `sync.test.ts` |
-| Spec test files | `.spec.ts` suffix | `issue.spec.ts` |
+| Component test files | `.test.tsx` suffix | `viewer.test.tsx` |
+| Spec test files | `.spec.ts` suffix | `build.spec.ts` |
 
 ---
 
 ## Testing Strategy
 
-The CLI uses two types of tests:
+The CLI uses three test types, each with a distinct suffix and runner:
+
+| Type | Suffix | Runner | Use for |
+|---|---|---|---|
+| **Unit** | `.test.ts` | `bun:test`, direct function calls | Pure logic in `shared/`, models, services |
+| **Component** | `.test.tsx` | `ink-testing-library` | Ink components — rendering, key handling, phase transitions |
+| **Spec** | `.spec.ts` | `runCli()` from `shared/test/` | End-to-end: spawns `epic.ts`, asserts on stdout/stderr/exit/files |
+
+`bunfig.toml` excludes `sandbox/**` and `.worktrees/**` from test discovery.
 
 ### Unit Tests (`.test.ts`)
 
 Unit tests call functions directly without spawning processes. They test operations and services in isolation.
 
-**Location**: Co-located with the code being tested
-- `commands/{command}/{operation}/{operation}.test.ts`
-- `commands/{command}/{command}.test.ts`
+**Location**: Co-located with the code being tested — `commands/{command}/{operation}/{operation}.test.ts`, or under `shared/.../*.test.ts` for shared library code.
 
 **Characteristics**:
 - Fast execution
@@ -364,23 +377,60 @@ test('syncs issue to GitHub', async () => {
 });
 ```
 
-### Spec Tests (`.spec.ts`)
+### Component Tests (`.test.tsx`)
 
-Spec tests spawn actual terminal processes to run CLI commands. They validate real-world behavior end-to-end.
+Component tests render Ink/React components in-process using `ink-testing-library`. They cover the rendering surface — what reaches `lastFrame()` after a sequence of events or keystrokes — without spawning the CLI or depending on a real TTY.
 
-**Location**: At the command level
-- `commands/{command}/{command}.spec.ts`
+**Location**: Co-located with the component — `{operation}-interactive.test.tsx` next to `{operation}-interactive.tsx`, or `{component}.test.tsx` next to a shared component.
 
-**Characteristics**:
-- Spawn `bun run cli.ts` as subprocess
-- Test against temporary git repositories
-- Validate stdout, stderr, and exit codes
-- Verify file system changes
-- Slower but higher confidence
+**Pattern** (canonical example: `shared/integrations/agents/viewer.test.tsx`):
+- Render with `interactive={true}` so `useInput` activates without a real TTY
+- For components driven by async streams, subclass the producer (e.g., `TestSession extends AgentSession`) and `push()` events from the test
+- Use a `flush()` helper (`setImmediate` x2-3) between actions and assertions so React commits and any async tail loops drain
+- Assert on `lastFrame()` for snapshot-style checks, `frames` for full render history, `stdin.write(...)` for input
 
 ```typescript
-// issue.spec.ts
-import { runCli, setupTestRepo } from '../../shared/test/index.ts';
+// viewer.test.tsx
+import { render } from 'ink-testing-library';
+import { Viewer } from './viewer.tsx';
+
+test('renders assistant text content into the feed', async () => {
+  const { session, repo } = setup();
+  const { lastFrame, unmount } = render(
+    <Viewer session={session} pid={FAKE_PID} interactive />,
+  );
+  try {
+    session.push({
+      type: 'assistant',
+      raw: { message: { content: [{ type: 'text', text: 'planning the change' }] } },
+    });
+    await flush();
+    expect(lastFrame()).toContain('planning the change');
+  } finally {
+    unmount();
+    repo.cleanup();
+  }
+});
+```
+
+What component tests deliberately don't cover: real subprocess spawns, file/network IO triggered by side-effecting actions, real TTY behavior. Push those down to spec tests.
+
+### Spec Tests (`.spec.ts`)
+
+Spec tests spawn an actual `bun run epic.ts` subprocess to validate end-to-end behavior.
+
+**Location**: Per-operation, under a `tests/` subfolder — `commands/{command}/{operation}/tests/{operation}.spec.ts`. Each operation owns its own spec; the command-level router file (`{command}.ts`) is routing-only and doesn't need its own spec.
+
+**Characteristics**:
+- Spawn `bun run epic.ts` as subprocess
+- Test against temporary git repositories from `setupTestRepo()`
+- Validate stdout, stderr, and exit codes
+- Verify file system changes
+- Slower but higher confidence; use sparingly for the golden path and shape-of-output assertions
+
+```typescript
+// commands/project/new/tests/new.spec.ts
+import { runCli, setupTestRepo } from '../../../../shared/test/index.ts';
 
 test('creates issue file', async () => {
   const repo = setupTestRepo();
@@ -406,29 +456,33 @@ Global test utilities live in `shared/test/`:
 
 | Scenario | Test Type |
 |----------|-----------|
-| Testing operation business logic | Unit test |
-| Testing argument parsing | Spec test |
-| Testing CLI output format | Spec test |
-| Testing file creation/modification | Both |
-| Testing error messages | Spec test |
-| Testing integration between layers | Spec test |
+| Pure business logic in an operation or service | Unit |
+| Helpers in `shared/` (parsers, formatters, models) | Unit |
+| Ink component rendering, key bindings, phase transitions | Component |
+| Stream-driven UI (event-to-frame mapping) | Component |
+| Argument parsing, CLI output format, exit codes | Spec |
+| End-to-end behavior across layers (subprocess + temp repo + `gh` stubs) | Spec |
+| Error messages surfaced to the user | Spec |
+
+Do **not** use `.unit.ts`. Use `.test.ts` for unit, `.test.tsx` for component, `.spec.ts` for spec.
 
 ---
 
 ## Adding a New Operation
 
 1. Create folder: `commands/{command}/{operation}/`
-2. Create operation file: `{operation}.ts`
-3. Create test file: `{operation}.test.ts`
-4. Export main function from operation file
-5. Import and route in `{command}.ts`
+2. Create operation file: `{operation}.ts` (or `{operation}.tsx` if it renders Ink UI)
+3. Add tests next to it as needed:
+   - `{operation}.test.ts` for unit tests
+   - `{operation}-interactive.test.tsx` for Ink component tests
+   - `tests/{operation}.spec.ts` for end-to-end specs
+4. Export the main function and route to it in `{command}.ts`
 
 ---
 
 ## Adding a New Command
 
 1. Create folder: `commands/{command}/`
-2. Create command router: `{command}.ts`
-3. Create spec tests: `{command}.spec.ts`
-4. Create operations as subfolders
-5. Add route in `cli.ts`
+2. Create command router: `{command}.ts` (routing only)
+3. Create operations as subfolders, each with its own tests as above
+4. Add the route in `epic.ts`

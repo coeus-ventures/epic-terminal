@@ -1,7 +1,8 @@
 {
-  "baseDirectory": "docs",
+  "baseDirectory": ".epic",
   "issuesDirectory": "issues",
   "draftsDirectory": "drafts",
+  "type": "terminal",
   "worktreesDirectory": ".worktrees",
   "projectPrefix": "cli"
 }
