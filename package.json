@@ -15,6 +15,7 @@
   "private": true,
   "devDependencies": {
     "@types/bun": "latest",
+    "ink-testing-library": "^4.0.0",
     "react-devtools-core": "^7.0.1"
   },
   "peerDependencies": {

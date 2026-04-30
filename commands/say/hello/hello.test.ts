@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, spyOn } from 'bun:test';
-import { greet } from './greet.ts';
+import { hello } from './hello.ts';
 
-describe('greet', () => {
+describe('hello', () => {
   let consoleSpy: ReturnType<typeof spyOn>;
   let logs: string[];
 
@@ -16,18 +16,13 @@ describe('greet', () => {
     consoleSpy.mockRestore();
   });
 
-  it('should greet World by default', async () => {
-    await greet({});
+  it('greets World by default', async () => {
+    await hello({});
     expect(logs).toContain('Hello, World!');
   });
 
-  it('should greet with custom name', async () => {
-    await greet({ name: 'Alice' });
+  it('greets the provided name', async () => {
+    await hello({ name: 'Alice' });
     expect(logs).toContain('Hello, Alice!');
-  });
-
-  it('should greet with another name', async () => {
-    await greet({ name: 'Bob' });
-    expect(logs).toContain('Hello, Bob!');
   });
 });

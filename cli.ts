@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 
-import { helloCommand } from './commands/hello/hello.ts';
+import { sayCommand } from './commands/say/say.ts';
 
 const COMMANDS = {
-  hello: helloCommand,
+  say: sayCommand,
 } as const;
 
 function showHelp() {
@@ -13,7 +13,7 @@ CLI Boilerplate - A minimal CLI starter template
 Usage: cli <command> [options]
 
 Commands:
-  hello      Say hello (example command)
+  say        Render greetings (example command)
 
 Run 'cli <command> --help' for more information on a specific command.
   `.trim());

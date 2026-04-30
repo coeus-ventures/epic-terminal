@@ -141,8 +141,7 @@ describe('Settings Manager', () => {
 
       const settings = await settingsManager.loadSettings(testDir);
 
-      // Should still return defaults even though not in git repo
-      expect(settings.baseDirectory).toEqual(DEFAULT_SETTINGS.baseDirectory);
+      expect(settings.baseDirectory).toEqual('.epic');
       expect(settings.issuesDirectory).toEqual(DEFAULT_SETTINGS.issuesDirectory);
       expect(settings.draftsDirectory).toEqual(DEFAULT_SETTINGS.draftsDirectory);
       expect(settings.worktreesDirectory).toEqual(DEFAULT_SETTINGS.worktreesDirectory);
