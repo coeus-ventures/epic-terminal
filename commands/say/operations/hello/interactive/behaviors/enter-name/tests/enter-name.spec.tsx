@@ -1,13 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { render } from "ink-testing-library";
-import { HelloInteractive } from "../hello-interactive.tsx";
+import { HelloInteractive } from "../../../hello.tsx";
 
 const flush = () =>
   new Promise<void>((resolve) => {
     setImmediate(() => setImmediate(() => setImmediate(() => resolve())));
   });
 
-describe("HelloInteractive", () => {
+describe("enter-name (behavior)", () => {
   it("shows the prompt by default", async () => {
     const { lastFrame, unmount } = render(<HelloInteractive />);
     try {
@@ -18,8 +18,11 @@ describe("HelloInteractive", () => {
     }
   });
 
-  it("renders typed name and greeting on Enter", async () => {
-    const { stdin, lastFrame, unmount } = render(<HelloInteractive />);
+  it("echoes typed input and captures the name on Enter", async () => {
+    let captured: string | undefined;
+    const { stdin, lastFrame, unmount } = render(
+      <HelloInteractive onComplete={(name) => { captured = name; }} />,
+    );
     try {
       stdin.write("Alice");
       await flush();
@@ -27,18 +30,21 @@ describe("HelloInteractive", () => {
 
       stdin.write("\r");
       await flush();
-      expect(lastFrame()).toContain("Hello, Alice!");
+      expect(captured).toBe("Alice");
     } finally {
       unmount();
     }
   });
 
-  it("falls back to World on empty input", async () => {
-    const { stdin, lastFrame, unmount } = render(<HelloInteractive />);
+  it("captures empty input on Enter (defaults to World downstream)", async () => {
+    let captured: string | undefined;
+    const { stdin, unmount } = render(
+      <HelloInteractive onComplete={(name) => { captured = name; }} />,
+    );
     try {
       stdin.write("\r");
       await flush();
-      expect(lastFrame()).toContain("Hello, World!");
+      expect(captured).toBe("");
     } finally {
       unmount();
     }

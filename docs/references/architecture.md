@@ -1,21 +1,22 @@
-# Command-Operation Architecture Reference
+# Epic Terminal Architecture
 
-> A three-layer model that separates CLI routing, business logic, and external integrations.
+> A layered model that separates CLI routing, headless logic, interactive UI, and external integrations.
 
 ## Architecture Overview
 
 ```
 +---------------------------+
 |      COMMAND LAYER        |
-|   issue.ts, project.ts    |
+|   say.ts, issue.ts        |
 |   (Routing/CLI parsing)   |
 +---------------------------+
               |
               v
 +---------------------------+
 |     OPERATION LAYER       |
-|   sync/, new/, close/     |
-|   (Orchestration)         |
+|  operations/{op}/         |
+|  ├── headless/            |  <- Pure logic, no rendering
+|  └── interactive/         |  <- Ink UI + behaviors
 +---------------------------+
               |
               v
@@ -44,14 +45,14 @@
 | Component | Responsibility |
 |-----------|----------------|
 | **Command files** | Parse CLI arguments, route to operations |
-| **epic.ts** | Top-level router for all commands |
+| **cli.ts** | Top-level router for all commands |
 
 **Location**: `commands/{command}/{command}.ts`
 
 **Must only**:
 - Parse and validate CLI arguments
 - Transform arguments into typed data structures
-- Call operation functions with parsed data
+- Route to the headless or interactive entry of an operation
 - Handle top-level errors and user output
 
 **Must NOT**:
@@ -59,41 +60,78 @@
 - Make API calls
 - Read/write files directly
 
-**Key principle**: Commands parse arguments and pass typed data to operations. Operations never see raw `argv` or CLI strings. This makes operations easy to test without simulating CLI input.
+**Key principle**: Commands parse arguments and pass typed data to operations. Operations never see raw `argv` or CLI strings. This makes operations easy to test without simulating CLI input. Choosing between an operation's headless and interactive entry (e.g. on `--interactive`) is routing, and belongs here.
 
 ---
 
 ### Operation Layer
 
-| Component | Responsibility |
-|-----------|----------------|
-| **Operations** | Orchestrate a single action, coordinate services and infrastructure |
-| **Tests** | Co-located tests for each operation |
+Each operation lives in its own folder under `commands/{command}/operations/{operation}/` and is split into two top-level concerns: **headless** (pure logic) and **interactive** (Ink UI).
 
-**Location**: `commands/{command}/{operation}/{operation}.ts`
+#### `headless/`
 
-**Receives**: Typed data structures from Command layer (not raw arguments)
+Contains the operation's pure logic entry point with no Ink, no rendering, and no JSX.
+
+| File | Purpose |
+|------|---------|
+| `{operation}.ts` | Entry point — orchestrates services and infrastructure, returns a typed result |
+| `tests/{operation}.test.ts` | Unit tests (call functions directly) |
+| `tests/{operation}.spec.ts` | End-to-end spec (spawns the real CLI process) |
+| `prompts/` | Prompt markdown files for agent-wrapper operations |
+
+**When to have headless only**: Operations that print output and exit without an interactive UI (`get`, `sync`, `close`).
+
+#### `interactive/`
+
+Contains the Ink entry point and all interactive behaviors. There are no direct tests on `{operation}.tsx` itself — coverage comes from behavior tests.
+
+```
+interactive/
+  {operation}.tsx          <- Ink entry point; composes components and behaviors
+  components/              <- (optional) presentational Ink components
+  behaviors/               <- one folder per user-triggered interaction
+    {behavior-name}/
+      hooks/               <- Ink/React hooks
+      components/          <- (optional) Ink components specific to this behavior
+      tests/
+        {behavior}.spec.tsx  <- ink-testing-library
+```
+
+The interactive entry typically also exports a thin wrapper (e.g. `run{Operation}Interactive`) that calls `render()` and awaits `waitUntilExit()`, so the command layer can launch it without touching Ink.
+
+**When to have interactive only**: Operations that render a persistent Ink view without a non-interactive code path (e.g. `list`).
+
+**When to have both**: Operations with both a CLI-flag path and an interactive UI (`new`, `hello`, `show`).
+
+#### Behaviors
+
+A behavior is a single user-triggered interaction in the interactive UI. Each distinct key binding or user action that produces a meaningful effect is its own behavior.
+
+Examples:
+- Type a name and press `Enter` to submit → `enter-name/`
+- `Enter` to open a selected issue → `open-issue/`
+- `x` to close the selected issue → `close-issue/`
+- `q`/`Esc` to exit → `exit/`
+
+Behaviors shared across multiple operations of the same command live in `commands/{command}/shared/behaviors/` and are imported by the operations that use them.
+
+#### Agent-Wrapper Operations
+
+Operations that run an agent and render a shared `Viewer` split their single `.tsx` file into a headless entry (agent invocation + state transition) and a thin interactive wrapper (renders `<Viewer>`). No operation-level `behaviors/` folder — interactive behaviors (`stop`, `detach`, `resume`) are owned by the shared `Viewer` component.
+
+**Receives**: Typed data structures from the Command layer (not raw arguments)
 
 **May**:
 - Orchestrate service and infrastructure calls
+- Render Ink UI (interactive entry points only)
 - Call other operations
 - Coordinate multiple integrations
 - Return typed results
 
 **Must NOT**:
 - Parse CLI arguments
-- Execute shell commands directly
-- Parse external data formats directly
-
-**Key principle**: Operations receive parsed, typed inputs and return typed outputs. This makes them easy to unit test by passing data directly without CLI simulation.
-
-```typescript
-// Good: Operation receives typed data
-async function syncIssue(options: { issueId: string; force: boolean }) { ... }
-
-// Bad: Operation parses arguments
-async function syncIssue(args: string[]) { ... }
-```
+- Execute shell commands directly (use integrations)
+- Mix headless logic into interactive files
 
 ---
 
@@ -108,7 +146,7 @@ async function syncIssue(args: string[]) { ... }
 **When to use**: Extract to a service when:
 - Business logic is complex enough to warrant its own tests
 - Logic is reused across multiple operations
-- Operation file becomes too large (>200 lines)
+- An operation file becomes too large (>200 lines)
 
 **May**:
 - Contain complex business logic
@@ -119,21 +157,6 @@ async function syncIssue(args: string[]) { ... }
 - Parse CLI arguments
 - Import from Command or Operation layers
 - Handle user output directly
-
-**Key principle**: Services are like controllers in web development. When an operation grows too complex, extract the business logic into a service. The operation becomes a thin orchestrator.
-
-```typescript
-// Before: Complex operation
-async function syncIssue(options: SyncOptions) {
-  // 200+ lines of business logic
-}
-
-// After: Operation orchestrates service
-async function syncIssue(options: SyncOptions) {
-  const service = new IssueSyncService();
-  return service.sync(options);
-}
-```
 
 ---
 
@@ -160,15 +183,27 @@ async function syncIssue(options: SyncOptions) {
 
 | Model | Responsibility | File |
 |-------|----------------|------|
-| **issue** | Issue file read/write, front matter | `commands/issue/shared/models/issue.ts` |
 | **settings** | Config file management | `shared/models/settings.ts` |
 
 #### Integrations
 
 | Integration | Responsibility | File |
 |-------------|----------------|------|
-| **github** | GitHub API via `gh` CLI | `shared/integrations/github.ts` |
 | **git** | Git operations | `shared/integrations/git.ts` |
+| **github** | GitHub API via `gh` CLI | `shared/integrations/github.ts` |
+
+---
+
+## Supporting Folders
+
+Two folders sit alongside the layered tree and are available to any layer that may import infrastructure:
+
+| Folder | Responsibility |
+|--------|----------------|
+| `lib/` | Cross-cutting utilities (config, settings, gitignore, the Ink renderer) |
+| `components/ink/` | Reusable presentational Ink components (`Box`, `Text`, `Spinner`, …) re-exported from `components/ink/index.ts` |
+
+`components/ink/` is UI infrastructure: interactive entries and behaviors import from it, never the reverse.
 
 ---
 
@@ -176,12 +211,16 @@ async function syncIssue(options: SyncOptions) {
 
 | Component | Location | File Pattern |
 |-----------|----------|--------------|
+| Top-level router | (repo root) | `cli.ts` |
 | Command router | `commands/{command}/` | `{command}.ts` |
-| Operation | `commands/{command}/{operation}/` | `{operation}.ts` (or `.tsx` for Ink UI) |
-| Operation unit tests | `commands/{command}/{operation}/` | `{operation}.test.ts` |
-| Operation component tests | `commands/{command}/{operation}/` | `{operation}.test.tsx` |
-| Operation spec tests | `commands/{command}/{operation}/tests/` | `{operation}.spec.ts` |
-| Command shared | `commands/{command}/shared/` | `services/`, `models/`, `integrations/` |
+| Headless entry | `commands/{command}/operations/{operation}/headless/` | `{operation}.ts` |
+| Headless unit tests | `commands/{command}/operations/{operation}/headless/tests/` | `{operation}.test.ts` |
+| Headless spec tests | `commands/{command}/operations/{operation}/headless/tests/` | `{operation}.spec.ts` |
+| Interactive entry | `commands/{command}/operations/{operation}/interactive/` | `{operation}.tsx` |
+| Behavior hook | `commands/{command}/operations/{operation}/interactive/behaviors/{b}/hooks/` | `use-{b}.ts(x)` |
+| Behavior tests | `commands/{command}/operations/{operation}/interactive/behaviors/{b}/tests/` | `{b}.spec.tsx` |
+| Command shared behaviors | `commands/{command}/shared/behaviors/{b}/hooks/` | `use-{b}.ts(x)` |
+| Command shared services | `commands/{command}/shared/services/` | `*.ts` |
 | Global shared | `shared/` | `services/`, `models/`, `integrations/`, `test/` |
 | Test helpers | `shared/test/` | `cli.ts`, `index.ts` |
 
@@ -189,50 +228,67 @@ async function syncIssue(options: SyncOptions) {
 
 ## Example Structure
 
+This is the `say` command as shipped in this template, alongside what a richer `issue` command looks like.
+
 ```
 shared/
   models/
-    settings.ts           <- Global config management
+    settings.ts            <- Global config management
   integrations/
-    github.ts             <- GitHub API via gh CLI
-    git.ts                <- Git operations
+    git.ts                 <- Git operations
+    github.ts              <- GitHub API via gh CLI
   test/
-    cli.ts                <- Test helpers (runCli, setupTestRepo)
-    index.ts              <- Test helper exports
+    cli.ts                 <- Test helpers (runCli, setupTestRepo)
+    index.ts               <- Test helper exports
+
+components/
+  ink/
+    Box.tsx
+    Text.tsx
+    Spinner.tsx
+    index.ts               <- Re-exports all Ink components + primitives
 
 commands/
+  say/
+    say.ts                                            <- Command router (routing only)
+    operations/
+      hello/
+        headless/
+          hello.ts                                    <- Pure greeting logic, returns typed result
+          tests/
+            hello.test.ts                             <- Unit tests
+            hello.spec.ts                             <- E2E spec (spawns cli.ts)
+        interactive/
+          hello.tsx                                   <- Ink entry; composes behaviors + run wrapper
+          behaviors/
+            enter-name/
+              hooks/
+                use-enter-name.tsx                    <- Capture input + submit on Enter
+              tests/
+                enter-name.spec.tsx                   <- Behavior spec (ink-testing-library)
+
   issue/
-    issue.ts                          <- Command router (routing only)
+    issue.ts
     shared/
-      models/
-        issue.ts                      <- Issue file read/write
       services/
-        issue-sync.ts                 <- Complex sync business logic
-    get/
-      get.ts                          <- Operation
-      get.test.ts                     <- Unit tests (call functions directly)
-    new/
-      new.ts                          <- Operation entry point
-      new-interactive.tsx             <- Ink/React UI
-      new-interactive.test.tsx        <- Component tests (ink-testing-library)
-    sync/
-      sync.ts
-      sync.test.ts
-    build/
-      build.tsx
-      tests/
-        build.spec.ts                 <- Spec tests (spawn CLI process)
-  project/
-    project.ts
-    shared/
-      models/
-        project.ts
-    new/
-      new.ts
-      new-interactive.tsx
-      new-interactive.test.tsx
-      tests/
-        new.spec.ts
+        issue-naming.ts
+      behaviors/                                      <- Shared across list + show
+        close-issue/hooks/use-close-issue.tsx
+        exit/hooks/use-exit.tsx
+    operations/
+      close/
+        headless/
+          close.ts
+          tests/
+            close.test.ts
+            close.spec.ts
+      list/
+        interactive/
+          list.tsx
+          behaviors/
+            open-issue/
+              hooks/use-open-issue.tsx
+              tests/open-issue.spec.tsx
 ```
 
 ---
@@ -251,81 +307,59 @@ commands/
 - Services import other services and infrastructure
 - Infrastructure imports only other infrastructure
 - No layer imports from layers above it
+- `headless/` and `interactive/` within the same operation may import each other; `interactive/` often calls headless functions
 
 ---
 
 ## Sharing Hierarchy
 
-Code can be shared at three levels, following the same structure at each scope:
+Code can be shared at three levels:
 
 ```
-shared/                              <- Global: shared across all commands
+shared/                                      <- Global: shared across all commands
   services/
   models/
   integrations/
 
 commands/{command}/
-  shared/                            <- Command-level: shared between operations
+  shared/                                    <- Command-level: shared between operations
     services/
     models/
-    integrations/
-  {operation}/
-    {operation}.ts                   <- Operation-level: specific to this operation
+    behaviors/                               <- Shared interactive behaviors
+      {behavior-name}/
+        hooks/
+  operations/
+    {operation}/
+      headless/                              <- Operation-level logic
+      interactive/                           <- Operation-level UI
+        behaviors/
+          {behavior-name}/                   <- Behavior-specific to this operation
 ```
 
 ### Scope Rules
 
 | Scope | Location | Shared Between |
 |-------|----------|----------------|
-| **Operation** | `commands/{command}/{operation}/` | Nothing (operation-specific) |
+| **Behavior** | `operations/{op}/interactive/behaviors/{b}/` | Nothing (behavior-specific) |
+| **Operation** | `operations/{op}/` | headless and interactive of the same operation |
 | **Command** | `commands/{command}/shared/` | Operations within the same command |
 | **Global** | `shared/` | All commands and operations |
 
 ### When to Use Each Level
 
-**Operation-level** (default):
-- Helpers and logic specific to one operation
-- Start here; promote to higher levels only when needed
+**Behavior-level** (default):
+- Hooks and components specific to one user interaction in one operation
 
-**Command-level shared**:
-- Services, models, or integrations used by 2+ operations in the same command
-- Example: issue model used by sync, start, and close operations
+**Command-level `shared/behaviors/`**:
+- Behaviors used by 2+ operations within the same command
+- Example: `close-issue`, `exit` appear in both `list` and `show`
 
-**Global shared**:
-- Services, models, or integrations used by 2+ commands
+**Command-level `shared/services/`**:
+- Services and models used by 2+ operations in the same command
+
+**Global `shared/`**:
+- Models and integrations used by 2+ commands
 - Core utilities used throughout the CLI
-- Example: GitHub integration used by issue and project commands
-
-### Example
-
-```
-shared/
-  integrations/
-    github.ts               <- used by issue and project commands
-    git.ts                  <- used by multiple commands
-  models/
-    settings.ts             <- global config management
-
-commands/
-  issue/
-    shared/
-      models/
-        issue.ts            <- issue file read/write
-      services/
-        issue-sync.ts       <- complex sync logic
-    sync/
-      sync.ts               <- uses shared/models/issue.ts
-    start/
-      start.ts              <- uses shared/models/issue.ts
-    close/
-      close.ts              <- uses shared/models/issue.ts
-  project/
-    shared/
-      models/
-        project.ts
-    new/
-      new.ts
-```
 
 ---
 
@@ -333,13 +367,16 @@ commands/
 
 | Item | Convention | Example |
 |------|------------|---------|
-| Command | lowercase | `issue`, `project` |
-| Operation | lowercase verb | `sync`, `new`, `close` |
-| Operation folder | matches operation name | `sync/sync.ts` |
-| Ink UI files | `.tsx` extension | `new-interactive.tsx` |
-| Unit test files | `.test.ts` suffix | `sync.test.ts` |
-| Component test files | `.test.tsx` suffix | `viewer.test.tsx` |
-| Spec test files | `.spec.ts` suffix | `build.spec.ts` |
+| Command | lowercase | `say`, `issue` |
+| Operation | lowercase verb | `hello`, `sync`, `close` |
+| Operation folder | matches operation name | `operations/hello/` |
+| Headless entry | `.ts` extension | `headless/hello.ts` |
+| Interactive entry | `.tsx` extension | `interactive/hello.tsx` |
+| Behavior folder | kebab-case noun | `enter-name/`, `open-issue/` |
+| Behavior hook | `use-` prefix | `use-enter-name.tsx` |
+| Unit test files | `.test.ts` suffix | `hello.test.ts` |
+| Component test files | `.test.tsx` suffix | `list.test.tsx` |
+| Spec test files | `.spec.ts(x)` suffix | `hello.spec.ts`, `enter-name.spec.tsx` |
 
 ---
 
@@ -349,96 +386,72 @@ The CLI uses three test types, each with a distinct suffix and runner:
 
 | Type | Suffix | Runner | Use for |
 |---|---|---|---|
-| **Unit** | `.test.ts` | `bun:test`, direct function calls | Pure logic in `shared/`, models, services |
+| **Unit** | `.test.ts` | `bun:test`, direct function calls | Pure headless logic, shared services, models |
 | **Component** | `.test.tsx` | `ink-testing-library` | Ink components — rendering, key handling, phase transitions |
-| **Spec** | `.spec.ts` | `runCli()` from `shared/test/` | End-to-end: spawns `epic.ts`, asserts on stdout/stderr/exit/files |
+| **Spec** | `.spec.ts(x)` | `runCli()` or `ink-testing-library` | Headless: spawns `cli.ts`, asserts stdout/stderr/exit/files. Behavior: renders a hook/entry in isolation |
 
 `bunfig.toml` excludes `sandbox/**` and `.worktrees/**` from test discovery.
 
 ### Unit Tests (`.test.ts`)
 
-Unit tests call functions directly without spawning processes. They test operations and services in isolation.
+Unit tests call headless functions directly without spawning processes.
 
-**Location**: Co-located with the code being tested — `commands/{command}/{operation}/{operation}.test.ts`, or under `shared/.../*.test.ts` for shared library code.
-
-**Characteristics**:
-- Fast execution
-- Mock external dependencies (GitHub, git)
-- Test individual functions with typed inputs
-- Good for testing business logic
+**Location**: `commands/{command}/operations/{operation}/headless/tests/{operation}.test.ts`, or under `shared/.../*.test.ts` for shared library code.
 
 ```typescript
-// sync/sync.test.ts
-import { syncIssue } from './sync.ts';
+// operations/hello/headless/tests/hello.test.ts
+import { hello } from '../hello.ts';
 
-test('syncs issue to GitHub', async () => {
-  const result = await syncIssue({ issueId: 'TEST-1', direction: 'push' });
-  expect(result.status).toBe('success');
+it('greets the provided name', async () => {
+  const result = await hello({ name: 'Alice' });
+  expect(result.greeting).toBe('Hello, Alice!');
 });
 ```
 
 ### Component Tests (`.test.tsx`)
 
-Component tests render Ink/React components in-process using `ink-testing-library`. They cover the rendering surface — what reaches `lastFrame()` after a sequence of events or keystrokes — without spawning the CLI or depending on a real TTY.
+Component tests render Ink/React components or behavior hooks in-process using `ink-testing-library`.
 
-**Location**: Co-located with the component — `{operation}-interactive.test.tsx` next to `{operation}-interactive.tsx`, or `{component}.test.tsx` next to a shared component.
-
-**Pattern** (canonical example: `shared/integrations/agents/viewer.test.tsx`):
+**Pattern**:
 - Render with `interactive={true}` so `useInput` activates without a real TTY
-- For components driven by async streams, subclass the producer (e.g., `TestSession extends AgentSession`) and `push()` events from the test
-- Use a `flush()` helper (`setImmediate` x2-3) between actions and assertions so React commits and any async tail loops drain
-- Assert on `lastFrame()` for snapshot-style checks, `frames` for full render history, `stdin.write(...)` for input
+- Use a `flush()` helper (`setImmediate` x2-3) between actions and assertions
+- Assert on `lastFrame()` for snapshots, `frames` for history, `stdin.write(...)` for input
+
+### Spec Tests (`.spec.ts` / `.spec.tsx`)
+
+Two kinds of spec test share the suffix:
+
+**Headless specs** spawn an actual `bun run cli.ts` subprocess to validate end-to-end behavior.
+
+**Location**: `commands/{command}/operations/{operation}/headless/tests/{operation}.spec.ts`
 
 ```typescript
-// viewer.test.tsx
-import { render } from 'ink-testing-library';
-import { Viewer } from './viewer.tsx';
-
-test('renders assistant text content into the feed', async () => {
-  const { session, repo } = setup();
-  const { lastFrame, unmount } = render(
-    <Viewer session={session} pid={FAKE_PID} interactive />,
-  );
-  try {
-    session.push({
-      type: 'assistant',
-      raw: { message: { content: [{ type: 'text', text: 'planning the change' }] } },
-    });
-    await flush();
-    expect(lastFrame()).toContain('planning the change');
-  } finally {
-    unmount();
-    repo.cleanup();
-  }
-});
+// operations/hello/headless/tests/hello.spec.ts
+const result = await runCli(['say', 'hello', '--name', 'Alice']);
+expect(result.exitCode).toBe(0);
+expect(result.stdout).toContain('Hello, Alice!');
 ```
 
-What component tests deliberately don't cover: real subprocess spawns, file/network IO triggered by side-effecting actions, real TTY behavior. Push those down to spec tests.
+**Behavior specs** render a behavior's hook or its operation's interactive entry using `ink-testing-library` and exercise a single interaction flow end-to-end (phases, I/O, transitions).
 
-### Spec Tests (`.spec.ts`)
-
-Spec tests spawn an actual `bun run epic.ts` subprocess to validate end-to-end behavior.
-
-**Location**: Per-operation, under a `tests/` subfolder — `commands/{command}/{operation}/tests/{operation}.spec.ts`. Each operation owns its own spec; the command-level router file (`{command}.ts`) is routing-only and doesn't need its own spec.
-
-**Characteristics**:
-- Spawn `bun run epic.ts` as subprocess
-- Test against temporary git repositories from `setupTestRepo()`
-- Validate stdout, stderr, and exit codes
-- Verify file system changes
-- Slower but higher confidence; use sparingly for the golden path and shape-of-output assertions
+**Location**: `commands/{command}/operations/{operation}/interactive/behaviors/{b}/tests/{b}.spec.tsx`
 
 ```typescript
-// commands/project/new/tests/new.spec.ts
-import { runCli, setupTestRepo } from '../../../../shared/test/index.ts';
+// behaviors/enter-name/tests/enter-name.spec.tsx
+import { render } from 'ink-testing-library';
+import { HelloInteractive } from '../../../hello.tsx';
 
-test('creates issue file', async () => {
-  const repo = setupTestRepo();
-  const result = await runCli(['issue', 'new', 'Test', '--no-sync'], { cwd: repo.path });
-
-  expect(result.exitCode).toBe(0);
-  expect(result.stdout).toContain('TEST-1');
-  repo.cleanup();
+it('renders typed name and greeting on Enter', async () => {
+  const { stdin, lastFrame, unmount } = render(<HelloInteractive />);
+  try {
+    stdin.write('Alice');
+    await flush();
+    stdin.write('\r');
+    await flush();
+    expect(lastFrame()).toContain('Hello, Alice!');
+  } finally {
+    unmount();
+  }
 });
 ```
 
@@ -450,33 +463,46 @@ Global test utilities live in `shared/test/`:
 |--------|---------|
 | `runCli(args, options)` | Spawn CLI process, capture output |
 | `setupTestRepo(options)` | Create temp directory with git and settings |
-| `createIssueFile(repo, options)` | Create test issue files |
 
 ### When to Use Each
 
 | Scenario | Test Type |
 |----------|-----------|
-| Pure business logic in an operation or service | Unit |
-| Helpers in `shared/` (parsers, formatters, models) | Unit |
-| Ink component rendering, key bindings, phase transitions | Component |
-| Stream-driven UI (event-to-frame mapping) | Component |
-| Argument parsing, CLI output format, exit codes | Spec |
-| End-to-end behavior across layers (subprocess + temp repo + `gh` stubs) | Spec |
-| Error messages surfaced to the user | Spec |
+| Pure headless logic in an operation or service | Unit (`.test.ts`) |
+| Helpers in `shared/` (parsers, formatters, models) | Unit (`.test.ts`) |
+| Behavior hook logic, state transitions | Component (`.test.tsx`) |
+| Ink component rendering, key bindings, phase transitions | Component (`.test.tsx`) |
+| Behavior interaction flows (multi-phase rendering) | Spec (`.spec.tsx`) |
+| Argument parsing, CLI output format, exit codes | Spec (`.spec.ts`) |
+| End-to-end behavior across layers | Spec (`.spec.ts`) |
 
-Do **not** use `.unit.ts`. Use `.test.ts` for unit, `.test.tsx` for component, `.spec.ts` for spec.
+Do **not** use `.unit.ts`. Use `.test.ts` for unit, `.test.tsx` for component, `.spec.ts`/`.spec.tsx` for spec.
 
 ---
 
 ## Adding a New Operation
 
-1. Create folder: `commands/{command}/{operation}/`
-2. Create operation file: `{operation}.ts` (or `{operation}.tsx` if it renders Ink UI)
-3. Add tests next to it as needed:
-   - `{operation}.test.ts` for unit tests
-   - `{operation}-interactive.test.tsx` for Ink component tests
-   - `tests/{operation}.spec.ts` for end-to-end specs
-4. Export the main function and route to it in `{command}.ts`
+1. Create folder: `commands/{command}/operations/{operation}/`
+2. For headless logic (always): create `headless/{operation}.ts` and `headless/tests/`
+3. For interactive UI: create `interactive/{operation}.tsx` plus a `run{Operation}Interactive` wrapper
+4. For each user-triggered interaction: create `interactive/behaviors/{behavior-name}/hooks/use-{behavior}.ts(x)` and `tests/`
+5. Export the entry function(s) and route to them in `{command}.ts`
+6. If a behavior is used by 2+ operations, move it to `commands/{command}/shared/behaviors/`
+
+### Checklist for headless-only operations
+
+- [ ] `headless/{operation}.ts` — pure logic, returns typed result
+- [ ] `headless/tests/{operation}.test.ts` — unit tests
+- [ ] `headless/tests/{operation}.spec.ts` — e2e spec via `runCli()`
+- [ ] Export and route in `{command}.ts`
+
+### Checklist for interactive operations
+
+- [ ] `headless/{operation}.ts` (if there is also a non-interactive path)
+- [ ] `interactive/{operation}.tsx` — Ink entry, composes behaviors, exports run wrapper
+- [ ] `interactive/behaviors/{b}/hooks/use-{b}.ts(x)` per interaction
+- [ ] `interactive/behaviors/{b}/tests/{b}.spec.tsx` per behavior
+- [ ] Export and route in `{command}.ts`
 
 ---
 
@@ -484,5 +510,5 @@ Do **not** use `.unit.ts`. Use `.test.ts` for unit, `.test.tsx` for component, `
 
 1. Create folder: `commands/{command}/`
 2. Create command router: `{command}.ts` (routing only)
-3. Create operations as subfolders, each with its own tests as above
-4. Add the route in `epic.ts`
+3. Create `operations/` with each operation following the checklist above
+4. Add the route in `cli.ts`

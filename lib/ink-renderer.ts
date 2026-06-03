@@ -124,7 +124,9 @@ export function renderInk(element: ReactElement, options: RenderOptions = {}): R
   return {
     instance,
     interactive: true,
-    waitUntilExit: () => instance.waitUntilExit(),
+    waitUntilExit: async () => {
+      await instance.waitUntilExit();
+    },
     unmount: () => instance.unmount(),
     rerender: (el: ReactElement) => instance.rerender(el),
     clear: () => instance.clear(),

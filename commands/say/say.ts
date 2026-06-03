@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
-import { hello } from './hello/hello.ts';
+import { hello } from './operations/hello/headless/hello.ts';
+import { runHelloInteractive } from './operations/hello/interactive/hello.tsx';
 
 export async function sayCommand(args: string[]) {
   if (args.includes('--help') || args.includes('-h')) {
@@ -36,7 +37,11 @@ Examples:
   const name = nameIdx !== -1 ? opArgs[nameIdx + 1] : undefined;
   const interactive = opArgs.includes('--interactive');
 
-  await hello({ name, interactive });
+  if (interactive) {
+    await runHelloInteractive({ name });
+  } else {
+    await hello({ name });
+  }
 }
 
 async function main() {

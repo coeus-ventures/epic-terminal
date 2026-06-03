@@ -17,12 +17,14 @@ describe("hello", () => {
   });
 
   it("greets World by default", async () => {
-    await hello({});
+    const result = await hello({});
     expect(logs).toContain("Hello, World!");
+    expect(result.greeting).toBe("Hello, World!");
   });
 
   it("greets the provided name", async () => {
-    await hello({ name: "Alice" });
+    const result = await hello({ name: "Alice" });
     expect(logs).toContain("Hello, Alice!");
+    expect(result.greeting).toBe("Hello, Alice!");
   });
 });

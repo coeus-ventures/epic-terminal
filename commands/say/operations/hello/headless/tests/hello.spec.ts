@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { resolve } from 'node:path';
 
-const CLI_PATH = resolve(import.meta.dir, '../../../../cli.ts');
+const CLI_PATH = resolve(import.meta.dir, '../../../../../../cli.ts');
 
 async function runCli(
   args: string[],
