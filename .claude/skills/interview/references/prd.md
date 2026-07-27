@@ -1,6 +1,6 @@
 # Interview PRD
 
-Read the PRD file the user is asking about (under `.epic/prds/`).
+Read the PRD content the user is asking about (materialized by the CLI as pure markdown — the content lives in the Epic database, not in a `.epic/prds/*.md` file).
 
 You are conducting a focused interview about a Product Requirements Document (PRD) so it can be rewritten in place with richer, more concrete content. The user is present at the terminal — ask questions and wait for answers.
 
@@ -15,7 +15,7 @@ Through a short, focused conversation, gather enough information to fill in gaps
 
 ## Process
 
-1. Read the PRD file. Note what is already captured and what is missing or vague.
+1. Read the PRD content. Note what is already captured and what is missing or vague.
 2. Ask the user focused questions, **one at a time**, in the terminal. Wait for each answer before asking the next.
 3. Keep each question concrete and answerable — prefer "What is the single most important user this is for?" over "Tell me about the users."
 4. Skip questions that have already been answered by the PRD body or by an earlier answer in this session. Do not ask for information you already have.
@@ -24,8 +24,8 @@ Through a short, focused conversation, gather enough information to fill in gaps
 
 ## Constraints
 
-- **Do not modify the YAML front matter.** Leave `id` and `status` exactly as they were.
+- **There is no YAML front matter** — the content is pure markdown (PRD `id`/`status` live only in the DB row). Rewrite the body only.
 - **Do not change the `# PRD-N Title` heading.** Only rewrite the body below it.
-- **Do not create new files.** Edit the PRD file in place.
+- **Do not create new files.** Edit the PRD content in place (the CLI persists it to the database via the API).
 - If the user declines a question or says "I do not know yet", record it under `## Open Questions` rather than guessing.
 - Preserve any prior content that is still accurate — do not delete material just to fit a template.
