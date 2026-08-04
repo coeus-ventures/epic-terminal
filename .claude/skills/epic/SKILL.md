@@ -1,5 +1,5 @@
 ---
-name: epic-cli
+name: epic
 description: Drive the Epic CLI (`epic`) — projects, PRDs, issues, and the agent build lifecycle (plan → execute → verify → fix → review → merge). Issue and PRD content lives in the Epic database and is reached through this CLI, never through files. Use when the user asks to create a project, write or break a PRD, register a PRD they already have, create/plan/build/review/merge an issue, read what an issue or PRD says, run a preview or worktree for one, or set up the machine to build at all. Also covers the marketplace side — publishing an issue as a request, proposals, funded contracts, and Stripe payouts. Triggers on "create a project", "generate a PRD", "here is my PRD", "import this PRD", "I already have the PRD", a pasted product spec to turn into issues, "break the PRD into issues", "plan this issue", "build this issue", "what does issue X say", "open the PR for this issue", "link this repo to a project", "why won't my build start", "connect Claude", "set up the agent credential", "post this issue to the marketplace", "accept this proposal", "approve the contract", "set up payouts".
 ---
 
@@ -30,7 +30,7 @@ epic skill install            # the workflow skills the build prompts follow
 epic credential login         # mint + store the token cloud builds authenticate with
 ```
 
-`epic skill install` is not optional flavour. Each build phase hands the agent a prompt saying *follow the project's execute skill (`.claude/skills/execute/SKILL.md`)* — a path relative to the repo being built. In a repo without those files the agent finds nothing and improvises: the build still runs, just not the way it was designed to. Once per machine for `epic-cli`, once per repo for the lifecycle skills.
+`epic skill install` is not optional flavour. Each build phase hands the agent a prompt saying *follow the project's execute skill (`.claude/skills/execute/SKILL.md`)* — a path relative to the repo being built. In a repo without those files the agent finds nothing and improvises: the build still runs, just not the way it was designed to. Once per machine for `epic`, once per repo for the lifecycle skills.
 
 ## The agent credential: which build needs what
 
