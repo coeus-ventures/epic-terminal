@@ -1,6 +1,6 @@
 ---
 name: epic-cli
-description: Drive the Epic CLI (`epic`) — projects, PRDs, issues, and the agent build lifecycle (plan → execute → verify → fix → review → merge). Issue and PRD content lives in the Epic database and is reached through this CLI, never through files. Use when the user asks to create a project, write or break a PRD, create/plan/build/review/merge an issue, read what an issue or PRD says, run a preview or worktree for one, or set up the machine to build at all. Also covers the marketplace side — publishing an issue as a request, proposals, funded contracts, and Stripe payouts. Triggers on "create a project", "generate a PRD", "break the PRD into issues", "plan this issue", "build this issue", "what does issue X say", "open the PR for this issue", "link this repo to a project", "why won't my build start", "connect Claude", "set up the agent credential", "post this issue to the marketplace", "accept this proposal", "approve the contract", "set up payouts".
+description: Drive the Epic CLI (`epic`) — projects, PRDs, issues, and the agent build lifecycle (plan → execute → verify → fix → review → merge). Issue and PRD content lives in the Epic database and is reached through this CLI, never through files. Use when the user asks to create a project, write or break a PRD, register a PRD they already have, create/plan/build/review/merge an issue, read what an issue or PRD says, run a preview or worktree for one, or set up the machine to build at all. Also covers the marketplace side — publishing an issue as a request, proposals, funded contracts, and Stripe payouts. Triggers on "create a project", "generate a PRD", "here is my PRD", "import this PRD", "I already have the PRD", a pasted product spec to turn into issues, "break the PRD into issues", "plan this issue", "build this issue", "what does issue X say", "open the PR for this issue", "link this repo to a project", "why won't my build start", "connect Claude", "set up the agent credential", "post this issue to the marketplace", "accept this proposal", "approve the contract", "set up payouts".
 ---
 
 # Epic CLI
@@ -137,7 +137,8 @@ links anyway and records that it was forced.
 ## PRD → issues
 
 ```bash
-epic prd generate "<one paragraph describing the product>" -b   # authors PRD-N in the DB
+epic prd import ./prd.md                                        # a document you ALREADY have, verbatim
+epic prd generate "<one paragraph describing the product>" -b   # or: let an agent author PRD-N
 epic prd show PRD-1                                             # read what it wrote
 epic prd plan PRD-1 -b                                          # rewrite the body as a structured spec
 epic prd break PRD-1 -b                                         # decompose into issues, in dependency order
@@ -157,6 +158,35 @@ main. It is valid only from `in_review` (every issue done), and the server owns 
 
 **Two different `--local` flags, on purpose.** On `prd build` it means *where the build runs*.
 On `prd generate` / `prd break` it means *do not touch the backend at all* — offline authoring.
+
+### The user already has the PRD — `import`, never `generate`
+
+When the document exists — pasted into the conversation, sent over WhatsApp, written in another
+tool — it goes in **verbatim**:
+
+```bash
+epic project new recipe-box --web     # only if there is no project yet
+epic prd import ./prd.md              # the document, byte for byte
+epic prd break PRD-1 -b               # issues, in dependency order
+```
+
+`epic prd generate "<the pasted text>"` is the wrong reflex and the expensive one: it spends an
+agent run **rewriting** a document that was already final, and returns the model's wording in
+place of the author's. `import` runs no agent, takes one round trip, and stores exactly what it
+was given.
+
+- `--title "…"` overrides the title; without it the title is the document's first `# ` heading,
+  then the file name.
+- `--prd PRD-2` **replaces** that PRD's document instead of creating one. It is also how you
+  finish an import whose content write failed — the error names that exact command.
+- `-` reads the document from stdin (`cat prd.md | epic prd import -`).
+- Refused rather than half-done: a missing file, a directory, an empty document, one over
+  100,000 characters, or `--title` with no value.
+
+**Write the file with your file-writing tool, never a shell heredoc.** A PRD is full of `$VAR`,
+backticks and quotes; an unquoted heredoc expands `$DATABASE_URL` to nothing and can execute
+what is inside backticks, corrupting the document silently. If you must use a heredoc, quote the
+delimiter (`<<'EOF'`).
 
 ## One issue, end to end
 
