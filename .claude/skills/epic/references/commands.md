@@ -10,7 +10,12 @@ Conventions used below:
 - `--provider claude|claude-headless|codex|opencode` — which agent runs the phase (the PRD
   authoring commands accept `claude|codex`). Defaults to the project's agent, read from the
   API. An unknown value, or the flag with no value, is an error naming the accepted set.
-- `--model NAME` — override the Claude model for every agent in the run.
+- `--model NAME` — override the Claude model for every agent in the run. Only the `issue`
+  commands that reach an agent take it (`build`, `plan`, `execute`, `verify`, `fix`, `review`,
+  `merge`, `approve`, `interview`, `attach`, `message`, `start`) plus `prototype new`.
+  **`prd build` and `prd break` do not accept it** — there is no per-PRD model override; to
+  build a PRD's issues on a specific model, build each `epic issue build <ID> --model NAME`
+  yourself instead of `epic prd build`.
 - `<ID>` — an issue identifier (`TOD-3`), its sequence number (`3`), or its raw id.
   `<PRD-ID>` — `PRD-1`, `1`, or the uuid.
 - Every subcommand below rejects flags it does not accept (exit 1, naming the accepted set),
@@ -36,14 +41,14 @@ Lifecycle only — nothing here runs an agent or builds. Building goes through
 | `epic issue show <ID> [-b]` | Metadata then the body. |
 | `epic issue build <ID> [--local\|--remote] [-b] [--foreground] [--no-tty] [--mode auto\|manual] [--base BRANCH] [--model NAME] [--provider P] [--record]` | plan → execute → verify → fix loop. **Local unless `--remote` (alias `--cloud`)** — no project setting decides this, and the resolution is offline. `--base` cuts the worktree from another branch. `--foreground` applies to remote builds (poll to completion). `--no-tty` exits the viewer when the build ends instead of waiting for `q`. A `-b` build that dies right after detaching is reported with its log, not as success. |
 | `epic issue plan\|execute\|verify\|fix\|review <ID> [-b] [--provider P] [--model NAME]` | Individual phases. `verify` also takes `-p PORT` (default 3000) and `--record` (one video per scenario; off by default because it slows the phase). |
-| `epic issue interview <ID> [--provider P]` | Q&A that rewrites the issue body. |
+| `epic issue interview <ID> [--provider P] [--model NAME]` | Q&A that rewrites the issue body. |
 | `epic issue pr <ID>` | Push the worktree branch and open (or surface) its PR. |
-| `epic issue merge <ID>` · `epic issue approve <ID>` | Agent-driven merge into main; `approve` also sets the issue Done. |
+| `epic issue merge <ID> [--provider P] [--model NAME]` · `epic issue approve <ID> [--provider P] [--model NAME]` | Agent-driven merge into main; `approve` also sets the issue Done. |
 | `epic issue close <ID>` · `epic issue assign <ID> <user>` | Status/assignee changes. |
 | `epic issue worktree <ID>` · `epic issue run <ID> -- <cmd>` | Create the worktree; run a command with its cwd set to that worktree (exit code propagates). |
-| `epic issue attach <ID>` · `epic issue message <ID> "<text>" [--session build\|verify\|merge] [-b]` | Attach to a live agent session; send it a message (resumes it). `attach` requires a TTY and refuses without one, before anything is spent. |
-| `epic issue log <ID> [--session build\|verify\|merge]` | Reads the transcript from disk, so it works after the session ends. Local builds only — remote transcripts live in the web app. |
-| `epic issue sessions` · `epic issue stop <ID>` | List tmux-backed sessions; end one and settle its sidecar (this is the fix for a stale "session in progress"). Local only — no CLI command stops a cloud build; use the web app. |
+| `epic issue attach <ID> [--session build\|verify\|merge] [--provider P] [--model NAME]` · `epic issue message <ID> "<text>" [--session build\|verify\|merge] [-b] [--provider P] [--model NAME]` | Attach to a live agent session; send it a message (resumes it). `attach` requires a TTY and refuses without one, before anything is spent. |
+| `epic issue log <ID> [--session build\|verify\|merge] [--provider P]` | Reads the transcript from disk, so it works after the session ends. Local builds only — a remote build's conversation is not retained anywhere (the web app keeps only phases/outcomes, plus the verify phase's own trace on the review page). |
+| `epic issue sessions` · `epic issue stop <ID>` | List tmux-backed sessions; end one and settle its sidecar (this is the fix for a stale "session in progress"). `stop` ends the run — tmux, the content lock, the agent's conversation — and requeues an in-flight issue to Queued; it never removes the worktree or branch, and reports what it left instead. Local only — no CLI command stops a cloud build; use the web app. |
 | `epic issue start <ID> [--foreground] [--model NAME]` | Alias of `build --remote`, retained for compatibility. Prefer `build --remote`. |
 
 ## prd
@@ -58,7 +63,7 @@ Lifecycle only — nothing here runs an agent or builds. Building goes through
 | `epic prd plan <PRD-ID> [-b] [--provider P]` | Rewrites the body as a structured spec. |
 | `epic prd interview <PRD-ID> [--provider P]` | Q&A that rewrites the body. |
 | `epic prd break <PRD-ID> [-b] [--replace] [--local] [--provider P]` | Decomposes into issues, created through the API in dependency order with their `dependsOn` edges. `--replace` deletes the previous breakdown's untouched issues first (addressed by row id) and is refused if any have started. On success the PRD settles on `ready`. `--local` = offline authoring. |
-| `epic prd build <PRD-ID> [--local\|--remote] [-b] [--mode auto\|manual] [--foreground] [--no-tty] [--record]` | Builds the PRD's issues in dependency order, stacking them onto the `prd-<n>` branch. Local unless `--remote` (alias `--cloud`). |
+| `epic prd build <PRD-ID> [--local\|--remote] [-b] [--mode auto\|manual] [--foreground] [--no-tty] [--record] [--parallel N] [--retry-failed]` | Builds the PRD's issues in dependency order, stacking them onto the `prd-<n>` branch. Local unless `--remote` (alias `--cloud`). `--parallel N` overrides `maxParallelIssues` from `.epic/settings.local.json` (default 4) for this run only; `0` is unlimited, spawning one worktree per ready issue. `--retry-failed` clears the sidecar of every issue this PRD left `failed` so they build again and their dependents stop being skipped; issues already done are untouched. |
 | `epic prd approve <PRD-ID>` | Lands the PRD: merges its `prd-<n> → main` PR, sets the status `done`, deletes the integration branch and points the sandbox at the new main. Valid only from `in_review`; idempotent once done. `--squash` is refused with the reason (the PRD PR lands as a merge commit). |
 | `epic prd attach <PRD-ID>` · `epic prd sessions` | Session control, same shape as the issue commands. `attach` lazily starts the PRD's agent — but only on a TTY, which it checks first. |
 | `epic prd stop <PRD-ID>` | Ends the session and settles the sidecar, **and** reverts a PRD stuck in `generating` / `breaking` back to `draft`. `building` is left alone (it belongs to the issue build queue). |
@@ -148,13 +153,37 @@ USD is the only currency the marketplace supports today.
 | `epic payouts status` · `epic payouts dashboard` | Account status; Stripe Express login link. |
 | `epic admin freelancer invite <email>` · `list [--status pending\|accepted\|revoked\|expired]` · `revoke <invitationId>` | Marketplace admin only — typically run as `epic --as <admin-profile> admin …`. |
 
-## stage and prototype
+## stage
 
 | Command | Notes |
 |---|---|
 | `epic stage assign --stage "<stage name>" --user <username>` | Auto-assign a user when an issue reaches that stage (e.g. `--stage "In Review"`). Stored in `.epic/settings.local.json` as `stageAssign`. |
-| `epic prototype new "<description>" [--web\|--terminal] [--provider P]` | Scaffolds a numbered prototype folder, writes `prompt.md`, and hands the terminal to the agent, which creates `page.tsx` (web) or `screen.tsx` (terminal). Root defaults to the project type. |
-| `epic prototype list` | Prototypes under `app/prototypes/` (web) or `prototypes/` (terminal); Enter resumes that prototype's agent session, `q` quits. |
+
+## prototype and screen
+
+A prototype is a **database-backed** record: a PRD turned into an ordered plan of screens,
+built and verified by agents in a sandbox Epic provisions. It scaffolds no folders — the
+folder-based prototype these commands used to create is gone. There is no `--local` and no
+local session: the account's agent credential is always required, Ctrl-C only detaches, and
+`epic prototype stop` is the only way to end a run from a shell.
+
+A screen has no minted id — `path` is unique within its prototype, so it is addressed as
+`<prototype-ref> <path>`. The raw uuid is accepted anywhere a screen is addressed.
+
+| Command | Notes |
+|---|---|
+| `epic prototype new <prd-ref> [--new] [--provider P] [--model <id>] [--effort <level>]` | One agent planning turn: creates the prototype and its ordered screen plan, follows the turn to settlement, prints the plan. Re-running reattaches (idempotency key = project + PRD); `--new` creates a second prototype from the same PRD on purpose. A settled turn that registered **zero screens is a failure**, not an empty plan. `--model` sets what the planning turn AND every later build run on (same setting `prototype model` changes afterwards) — without it nobody has chosen and each turn resolves the provider's default. `--effort` sets the reasoning level on models that take one. |
+| `epic prototype list [-b]` | Identifier (`PROTO-3`), title, status, source PRD, screen counts by status. Enter on a row shows its screens. **Prints nothing without `-b`** when there is no TTY. |
+| `epic prototype screens <prototype-ref>` | `PATH  POSITION  STATUS  NAME  LAST FAILURE`, ordered by position then creation time. Plain text always; takes no flags. A plan whose screens all failed is still a successful list (exit 0). |
+| `epic prototype build <prototype-ref> [--detached] [--rebuild] [--concurrency=N]` | Builds every screen not yet completed, in dependency order then by position. Attached by default — the CLI owns the queue and runs the same build `epic screen build` runs, **one screen at a time** from your terminal. `--detached` hands the plan to Epic Build, which builds **several screens at once**, as many as its machine can carry, and returns the run identifiers. `--concurrency=N` asks that build for at most N in flight (`--detached` only, refused otherwise); the machine still decides the ceiling, so asking for more than it holds changes nothing. `--rebuild` re-runs completed screens. A failed screen blocks only its dependents. **Exit non-zero only when a screen failed**; a blocked plan exits 0. |
+| `epic prototype model <prototype-ref> [<model-id>] [--effort L] [--default]` | Show or set the model the prototype's **build** runs on (not just the chat) — every screen agent reads it fresh each turn, so it also reaches screens already built on retry. Applies from the next turn; a turn already in flight keeps what it started on. Lives only in the Epic database. Refused while a build is in flight — `epic prototype stop <ref>` first. |
+| `epic prototype log <prototype-ref>` | The prototype's own planning conversation — the turn that turned the PRD into a screen plan. A screen's build is a different agent: use `epic screen log`. Read-only, works whether the turn is alive or finished. |
+| `epic screen build <prototype-ref> <path> [--detached] [--rebuild]` · `epic screen build <prototype-ref> --next [--detached] [--rebuild]` · `epic screen build <screen-id> …` | One screen, built and verified. Attached by default, exits on the terminal state. `--next` takes the screen the plan would build now (dependency order, then position) instead of naming one — the way to walk a plan one screen at a time. `--rebuild` is required to re-run a **completed** screen; failed or blocked retries without it. No `--local`. |
+| `epic screen log <prototype-ref> <path>` | What the agent that built this one screen actually did. Read-only, like `epic issue log`; a screen the build has not reached yet prints nothing and exits 0. |
+| `epic prototype stop <prototype-ref>` | Ends everything in flight — a full build with several screens running, or a single screen build (there is no `epic screen stop`). Writes a fact on the backend and returns; kills no local process. Idempotent: stopping a prototype with nothing running exits 0, and is how a stale `building` is cleared. Resume with `prototype build`, which skips completed screens. |
+
+Statuses — prototype: `draft` `planned` `building` `ready` `failed` `blocked` `archived`.
+Screen: `pending` `in_progress` `completed` `failed` `blocked`.
 
 ## Errors worth recognising
 
@@ -172,4 +201,10 @@ USD is the only currency the marketplace supports today.
 | `AGENT_CREDENTIAL_MISSING` / `AGENT_CREDENTIAL_REVOKED` | Same fix, found later: the build's own pre-flight. Confirm with `epic credential status`. |
 | `REMOTE_REQUIRES_GITHUB_APP` / `GITHUB_CONNECTION_REQUIRED` | Cloud builds push through the Epic GitHub App, so it must be installed on the repo's owner — the error carries the install URL. |
 | `DEFAULT_BRANCH_MUST_BE_MAIN` | Cloud-build precondition: the repo's default branch must be `main`. |
+| `PROTOTYPE_BUSY` | A prototype runs one build at a time and one is in flight. Wait, or `epic prototype stop <ref>`. |
+| `PROTOTYPE_HAS_NO_SCREENS` | Nothing to build — plan it first with `epic prototype new <prd-ref>`. |
+| `PROTOTYPE_HAS_NOTHING_TO_BUILD` | Every screen is completed. Pass `--rebuild`. |
+| `PROTOTYPE_NEEDS_CREDENTIAL` | A prototype always builds on Epic, so the account's agent credential is required even though nothing here is "remote". `epic credential login`. |
+| `SCREEN_ALREADY_COMPLETED` | Re-run it with `epic screen build <ref> <path> --rebuild`. |
+| `SCREEN_BLOCKED_BY_DEPENDENCY` | A dependency has not completed. `epic prototype screens <ref>` names it; or build the whole plan in order. |
 | `SNAPSHOT_OUTDATED` | The cloud sandbox ships an older `epic` than the backend requires. Not fixable from here — the snapshot has to be rebuilt. |

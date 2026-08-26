@@ -1,6 +1,6 @@
 ---
 name: epic
-description: Drive the Epic CLI (`epic`) — projects, PRDs, issues, and the agent build lifecycle (plan → execute → verify → fix → review → merge). Issue and PRD content lives in the Epic database and is reached through this CLI, never through files. Use when the user asks to create a project, write or break a PRD, register a PRD they already have, create/plan/build/review/merge an issue, read what an issue or PRD says, run a preview or worktree for one, or set up the machine to build at all. Also covers the marketplace side — publishing an issue as a request, proposals, funded contracts, and Stripe payouts. Triggers on "create a project", "generate a PRD", "here is my PRD", "import this PRD", "I already have the PRD", a pasted product spec to turn into issues, "break the PRD into issues", "plan this issue", "build this issue", "what does issue X say", "open the PR for this issue", "link this repo to a project", "why won't my build start", "connect Claude", "set up the agent credential", "post this issue to the marketplace", "accept this proposal", "approve the contract", "set up payouts".
+description: Drive the Epic CLI (`epic`) — projects, PRDs, issues, prototypes, and the agent build lifecycle (plan → execute → verify → fix → review → merge). Issue, PRD and prototype content lives in the Epic database and is reached through this CLI, never through files. Use when the user asks to create a project, write or break a PRD, register a PRD they already have, create/plan/build/review/merge an issue, turn a PRD into a prototype and build its screens, read what an issue or PRD says, run a preview or worktree for one, or set up the machine to build at all. Also covers the marketplace side — publishing an issue as a request, proposals, funded contracts, and Stripe payouts. Triggers on "create a project", "generate a PRD", "here is my PRD", "import this PRD", "I already have the PRD", a pasted product spec to turn into issues, "break the PRD into issues", "plan this issue", "build this issue", "what does issue X say", "open the PR for this issue", "link this repo to a project", "why won't my build start", "connect Claude", "set up the agent credential", "prototype this PRD", "build the prototype", "build this screen", "what screens does the prototype have", "stop the prototype build", "post this issue to the marketplace", "accept this proposal", "approve the contract", "set up payouts".
 ---
 
 # Epic CLI
@@ -8,7 +8,7 @@ description: Drive the Epic CLI (`epic`) — projects, PRDs, issues, and the age
 `epic` drives a project through PRD → issues → build. Four facts shape everything below:
 
 - **Content lives in the database.** An issue's body and a PRD's body are DB columns reached over the API. There are no `.epic/issues/*.md` or `.epic/prds/*.md` files — do not create them, do not look for them.
-- **The repo carries machine config only**: the gitignored `.epic/settings.local.json` (linked `projectId`, prefix) and `.epic/.worktreeinclude`. `.epic/sessions/` holds ephemeral per-phase scratch.
+- **The repo carries machine config only**: the gitignored `.epic/settings.local.json` (linked `projectId`, prefix) and `.epic/.worktreeinclude`. `.epic/sessions/<ID>/` holds a run's state — the phase marker (`build.json`, self-healing) and the agent's conversation id, which `stop` clears. It is not content.
 - **Commands need a linked project.** Anything touching issues or PRDs fails with "this repo is not linked to a project" until `epic project link` has run in that repo.
 - **A build is local unless you ask for the cloud.** `--remote` (alias `--cloud`) is the only thing that sends a build to a sandbox. Nothing else — no project setting, no environment — makes that decision for you.
 
@@ -188,6 +188,92 @@ backticks and quotes; an unquoted heredoc expands `$DATABASE_URL` to nothing and
 what is inside backticks, corrupting the document silently. If you must use a heredoc, quote the
 delimiter (`<<'EOF'`).
 
+## PRD → prototype → screens
+
+A **prototype** is the other thing a PRD can become: a database-backed record holding an
+ordered plan of **screens**, each built and verified by an agent. It is not the folder
+scaffolder this command used to be — it writes no files, and there is no local workspace, no
+worktree and no tmux session. **The work always happens in a sandbox Epic provisions**, so
+unlike `issue build` there is no `--local`, and the account's agent credential is never
+optional.
+
+```bash
+epic prototype new PRD-3              # one planning turn: the PRD becomes an ordered screen plan
+epic prototype screens PROTO-3        # PATH  POSITION  STATUS  NAME  LAST FAILURE
+epic prototype build PROTO-3          # build every screen not yet completed, in dependency order
+epic prototype build PROTO-3 --detached --concurrency=2   # let Epic Build run it, two screens at a time
+epic screen build PROTO-3 /checkout   # or exactly one screen
+epic prototype stop PROTO-3           # end whatever run is in flight
+epic prototype list -b                # PROTO-n, title, status, source PRD, screen counts
+```
+
+A screen has **no minted identifier** — its `path` is unique within its prototype, so a screen
+is addressed as `<prototype-ref> <path>` (`PROTO-3 /checkout`). The raw uuid is accepted
+everywhere too; it is just not what the tables print.
+
+### Planning is a turn that must produce a plan
+
+`epic prototype new <prd-ref>` creates the prototype, opens one agent turn, follows it to
+settlement and prints the plan. Two consequences:
+
+- **Re-running reattaches.** The idempotency key is `(project, PRD)`, so Ctrl-C and a re-run
+  land on the same prototype and the same turn — Ctrl-C detaches this terminal, it does not
+  stop anything. `--new` is the explicit way to create a *second* prototype from the same PRD.
+- **A settled turn with zero screens is a failure**, not an empty plan: registering screens is
+  advisory for the agent, so the command refuses that outcome and tells you to re-run.
+
+### Building: a queue, and how many screens at once
+
+`epic prototype build` is attached by default — this CLI owns the queue and invokes the very
+same per-screen build `epic screen build` runs, **one screen at a time**, from your terminal,
+in dependency order and then by position. `--detached` hands the whole plan to Epic Build's
+durable workflow, which builds **several screens at once**, and returns the run identifiers
+instead.
+
+How many is not a setting: the build measures the machine it runs on — memory and cores — and
+derives a number from it. `--concurrency=N` asks for *fewer* (`--detached` only, refused
+otherwise), which is what you want when you are watching a build to see what it does, or when
+the machine has other work on it. Asking for more than the machine can carry is not an error
+and changes nothing: only the server knows how big the machine is, so the request is clamped
+where it can be measured.
+
+Each screen builds in a `git worktree` of its own, on its own dev server, and its work is
+merged into the prototype's checkout when it completes — which is why parallel screens do not
+overwrite each other. When two screens do change the same lines, the second one's merge
+conflicts, and the agent that wrote it resolves the markers in its own worktree on the next
+turn.
+
+- **A failure poisons only its dependents.** Independent screens keep building; anything whose
+  dependency can never complete settles as `blocked`.
+- **Exit code is non-zero only when a screen failed.** A blocked plan exits 0 — that is a
+  decision needing a person, not a crash.
+- `--rebuild` re-runs screens that already completed; without it they are skipped, and a plan
+  where everything is built is refused (`PROTOTYPE_HAS_NOTHING_TO_BUILD`) rather than reported
+  as a build over zero work. A **failed or blocked** screen retries without the flag.
+- A prototype runs **one build at a time**: a second `prototype build` while one is live is
+  refused `PROTOTYPE_BUSY`, and there is no local lock because there is no local process.
+  Within a build, the screens are what run in parallel.
+
+### Stopping is a command, not a Ctrl-C
+
+Every turn is durable and runs on Epic, so killing the CLI ends only this terminal's view.
+`epic prototype stop <ref>` writes the stop on the backend and returns — it kills no process,
+covers a full build and a single screen build alike (there is no `epic screen stop`), and
+exits 0 even when nothing was running, which is also how a stale `building` is cleared. The
+build queue notices between screens: any status other than `building` ends it. Resume with
+`epic prototype build <ref>`, which skips what is already completed.
+
+### Vocabulary
+
+| | Statuses |
+|---|---|
+| prototype | `draft` `planned` `building` `ready` `failed` `blocked` `archived` |
+| screen | `pending` `in_progress` `completed` `failed` `blocked` |
+
+`screens` and `stop` are plain text always. `list` is a TUI — pass `-b` off a terminal, or it
+prints nothing. `new` and `build` attach a viewer; `build --detached` is the way to return
+immediately (there is no `-b` on either).
+
 ## One issue, end to end
 
 ```bash
@@ -214,8 +300,9 @@ Build locally against a local backend, and keep `--remote` for staging or produc
 criterion, and the review page plays them back. Off by default because filming slows the
 phase — turn it on when the question is *why did verify think this passed*.
 
-`epic issue log` reads a **local** build's transcript from disk. A remote build's transcript
-lives in the web app, not on this machine.
+`epic issue log` reads a **local** build's transcript from disk. A remote build's
+conversation is not retained anywhere — what the web app keeps is the phases and outcomes,
+plus the verify phase's own trace on the review page.
 
 ## The content contract during a phase
 
@@ -234,6 +321,39 @@ rescue; a PRD in `building` is left alone, because that status belongs to the is
 
 A cloud build has no session on this machine, and there is **no CLI command that stops one** —
 stop it from the web app.
+
+### `stop` ends the run and keeps the work
+
+It is not an undo, and not a cleanup. It kills tmux, clears the backend's `building` flag
+(releasing the content lock), requeues an issue that was still in flight to **Queued**, and drops
+the agent's stored conversation so the next build starts a fresh one — the run is over, and the
+next build starts at plan.
+
+**It never removes the worktree or the branch, and there is no flag that makes it.** Two reasons,
+and they are worth knowing before you go looking for one:
+
+- Every command that *does* remove a worktree acts on a terminal decision — `merge` releases it
+  once the work landed (keeping the branch), `close` force-removes it and deletes the branch
+  because the issue is abandoned. `stop` writes `Queued`, which is the opposite.
+- The worktree is what makes the next build cheap: `createWorktree` reuses it instead of
+  re-copying `node_modules` and re-seeding the database.
+
+So `stop` reports instead of deleting, and the report is the part to read out to the user:
+
+```
+Stopped TOD-5.
+  Worktree  /repo/.worktrees/tod-5 — clean
+  Branch    tod-5 — 1 commit no remote has
+            publish with 'epic issue pr TOD-5'
+            free the disk with 'epic wt remove tod-5'
+```
+
+The unpushed commit is the line that matters. A worktree is gigabyte-scale (a small Next project
+carries ~1.6 GB of `node_modules`), but disk is recoverable; a commit only this machine has is
+not. A later **cloud** build of the same issue refuses to run rather than discard it — the
+control plane answers `REMOTE_WOULD_DISCARD_LOCAL_WORK` — so `epic issue pr <ID>` is the move
+while the context is fresh. Want the disk back? That means you are done with the issue:
+`epic wt remove <branch>`, or `epic issue close <ID>` to abandon it outright.
 
 ## Marketplace: an issue, a proposal, a paid contract
 
@@ -283,6 +403,13 @@ profile, usually via `epic --as <admin-profile>`.
 | "session in progress" but nothing is running | Sidecar outlived its tmux session | `epic issue stop <ID>` / `epic prd stop <ID>`, then re-run |
 | A PRD sits in `generating` / `breaking` forever | Its agent was killed, so the settle hook never ran | `epic prd stop <PRD-ID>` — it reverts the status to `draft` |
 | Nothing here stops a cloud build | `issue stop` / `prd stop` are local-session commands | Stop it from the web app |
+| Ctrl-C did not stop a prototype or screen build | Every prototype turn is durable and runs on Epic; Ctrl-C detaches | `epic prototype stop <ref>` |
+| A prototype sits in `building` with nothing running | The status outlived the run | `epic prototype stop <ref>` — it exits 0 and clears it |
+| `PROTOTYPE_BUSY` | A prototype runs one build at a time | Wait for it, or `epic prototype stop <ref>` |
+| `PROTOTYPE_HAS_NOTHING_TO_BUILD` | Every screen is completed and `--rebuild` was not passed | `epic prototype build <ref> --rebuild`, or one screen with `epic screen build <ref> <path> --rebuild` |
+| `PROTOTYPE_NEEDS_CREDENTIAL` | A prototype always builds on Epic, so the account token is required — a local `claude` login is a different thing | `epic credential login` |
+| `SCREEN_BLOCKED_BY_DEPENDENCY` | Its dependency has not completed | `epic prototype screens <ref>` to see which, then build that one — or the whole plan in order |
+| A planning turn settled with no screens | The agent never registered a plan; that is a failed turn | Re-run `epic prototype new <prd-ref>` — it reattaches to the same prototype |
 | `409 ISSUE_LOCKED_BUILDING` | A build owns the content | `epic issue sessions`; wait, or stop the build |
 | "not linked to a project" | No `projectId` in this repo | `epic project link <ref>` |
 | `epic project build` is not a command | Project-level building does not exist | `epic prd build <PRD-ID>`, or `epic issue build <ID>` |
@@ -296,6 +423,7 @@ profile, usually via `epic --as <admin-profile>`.
 | A detached (`-b`) agent vanished right after starting | Its tmux server was a child of the shell that launched it and died with it | Launch it detached from the process group: `setsid epic issue build <ID> -b` |
 | A remote build starts, then fails on its first call home | The sandbox cannot reach a `localhost` backend | Build locally, or point at a publicly reachable backend |
 | The agent ignored the plan/execute/verify workflow | The repo has no lifecycle skills for the prompt to name | `epic skill install --project` |
+| `.worktrees` is eating the disk | Only `merge` and `close` reclaim one; `stop` keeps it on purpose | `epic wt list`, then `epic wt remove <branch>` — publish first if `stop` reported unpushed commits |
 
 Content that was already PATCHed is safe in the database; a phase that dies mid-flight leaves
 its buffer on disk and settles on the next foreground run of that phase.
